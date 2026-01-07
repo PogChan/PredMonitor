@@ -7,24 +7,40 @@ import json
 import logging
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Set
+from typing import Any, Deque, Dict, List, Optional, Sequence, Set, Tuple
 import aiohttp
 from websockets.asyncio.client import connect
 
 from ingest.ingest_settings import Settings
+from ingest.market_metadata import MarketMeta
 from ingest.ingest_utils import (
     parse_timestamp,
     normalize_side,
+    normalize_filter_terms,
+    build_text_blob,
+    match_any_keyword,
+    match_any_value,
+    extract_tag_names,
+    extract_company_match,
 )
 
 LOG = logging.getLogger("whale_hunter.kalshi")
 
-async def kalshi_ws_listener(settings: Settings, detector: Any) -> None:
+async def kalshi_ws_listener(
+    session: aiohttp.ClientSession, settings: Settings, detector: Any
+) -> None:
     reconnect_delay = settings.kalshi_reconnect_min
     while True:
         headers = build_kalshi_auth_headers(settings)
         if not headers:
             LOG.warning("Kalshi WS credentials missing; set KALSHI_ACCESS_KEY/KALSHI_PRIVATE_KEY.")
+            await asyncio.sleep(30)
+            continue
+        market_tickers, metadata = await resolve_kalshi_market_tickers(session, settings)
+        if metadata:
+            detector.update_market_metadata("kalshi", metadata)
+        if kalshi_filters_active(settings) and not market_tickers:
+            LOG.warning("Kalshi market filter returned no tickers; retrying soon.")
             await asyncio.sleep(30)
             continue
         try:
@@ -34,7 +50,7 @@ async def kalshi_ws_listener(settings: Settings, detector: Any) -> None:
                 ping_interval=settings.polymarket_ping_interval,
                 ping_timeout=settings.polymarket_ping_timeout,
             ) as websocket:
-                await kalshi_ws_subscribe(websocket, settings)
+                await kalshi_ws_subscribe(websocket, settings, market_tickers)
                 reconnect_delay = settings.kalshi_reconnect_min
                 async for message in websocket:
                     for trade in extract_kalshi_ws_trades(message):
@@ -48,6 +64,19 @@ async def kalshi_ws_listener(settings: Settings, detector: Any) -> None:
 async def kalshi_poller(
     session: aiohttp.ClientSession, settings: Settings, detector: Any
 ) -> None:
+    filters = build_kalshi_filters(settings)
+    filters_active = kalshi_filters_active(settings, filters)
+    allowed_markets: Set[str] = set(settings.kalshi_market_tickers)
+    if filters_active and not allowed_markets:
+        while True:
+            tickers, metadata = await fetch_kalshi_market_tickers(session, settings, filters)
+            allowed_markets = set(tickers)
+            if metadata:
+                detector.update_market_metadata("kalshi", metadata)
+            if allowed_markets:
+                break
+            LOG.warning("Kalshi market filter returned no tickers; poller paused.")
+            await asyncio.sleep(30)
     latest_timestamp = 0.0
     seen_trade_ids: Deque[str] = deque()
     seen_trade_id_set: Set[str] = set()
@@ -66,6 +95,12 @@ async def kalshi_poller(
             continue
         trades = extract_kalshi_trades(payload)
         for trade in trades:
+            if allowed_markets:
+                market = str(
+                    trade.get("market") or trade.get("ticker") or trade.get("market_ticker") or ""
+                )
+                if market and market not in allowed_markets:
+                    continue
             timestamp = parse_timestamp(
                 trade.get("timestamp")
                 or trade.get("time")
@@ -200,13 +235,15 @@ def load_rsa_private_key(private_key: str):
         return serialization.load_pem_private_key(key_bytes, password=None)
 
 
-async def kalshi_ws_subscribe(websocket: Any, settings: Settings) -> None:
+async def kalshi_ws_subscribe(
+    websocket: Any, settings: Settings, market_tickers: Sequence[str]
+) -> None:
     params: Dict[str, Any] = {"channels": settings.kalshi_ws_channels}
-    if settings.kalshi_market_tickers:
-        if len(settings.kalshi_market_tickers) == 1:
-            params["market_ticker"] = settings.kalshi_market_tickers[0]
+    if market_tickers:
+        if len(market_tickers) == 1:
+            params["market_ticker"] = market_tickers[0]
         else:
-            params["market_tickers"] = settings.kalshi_market_tickers
+            params["market_tickers"] = list(market_tickers)
     subscription = {"id": 1, "cmd": "subscribe", "params": params}
     await websocket.send(json.dumps(subscription))
 
@@ -243,3 +280,211 @@ def extract_kalshi_trades(payload: Any) -> List[Dict[str, Any]]:
     if isinstance(payload, list):
         return [trade for trade in payload if isinstance(trade, dict)]
     return []
+
+
+def build_kalshi_filters(settings: Settings) -> Dict[str, List[str]]:
+    return {
+        "keywords": normalize_filter_terms(settings.kalshi_market_keywords),
+        "exclude_keywords": normalize_filter_terms(settings.kalshi_market_exclude_keywords),
+        "categories": normalize_filter_terms(settings.kalshi_market_categories),
+        "subcategories": normalize_filter_terms(settings.kalshi_market_subcategories),
+        "tags": normalize_filter_terms(settings.kalshi_market_tags),
+        "companies": normalize_filter_terms(settings.kalshi_market_companies),
+    }
+
+
+def kalshi_filters_active(settings: Settings, filters: Optional[Dict[str, List[str]]] = None) -> bool:
+    if filters is None:
+        filters = build_kalshi_filters(settings)
+    return any(filters.values())
+
+
+async def resolve_kalshi_market_tickers(
+    session: aiohttp.ClientSession, settings: Settings
+) -> Tuple[List[str], Dict[str, MarketMeta]]:
+    if settings.kalshi_market_tickers:
+        return settings.kalshi_market_tickers, {}
+    if not kalshi_filters_active(settings):
+        return [], {}
+    filters = build_kalshi_filters(settings)
+    return await fetch_kalshi_market_tickers(session, settings, filters)
+
+
+async def fetch_kalshi_market_tickers(
+    session: aiohttp.ClientSession, settings: Settings, filters: Dict[str, List[str]]
+) -> Tuple[List[str], Dict[str, MarketMeta]]:
+    tickers: List[str] = []
+    metadata: Dict[str, MarketMeta] = {}
+    cursor = ""
+    for _ in range(settings.kalshi_markets_max_pages):
+        params: Dict[str, str] = {"limit": str(settings.kalshi_markets_limit)}
+        params.update(settings.kalshi_markets_params)
+        if cursor:
+            params.setdefault("cursor", cursor)
+        try:
+            async with session.get(settings.kalshi_markets_url, params=params) as response:
+                if response.status >= 400:
+                    LOG.warning("Kalshi markets request failed status=%s", response.status)
+                    break
+                payload = await response.json(content_type=None)
+        except Exception as exc:
+            LOG.warning("Kalshi markets request failed error=%s", exc)
+            break
+        items = extract_kalshi_market_items(payload)
+        if not items:
+            break
+        matched = 0
+        matched_items: List[Dict[str, Any]] = []
+        for item in items:
+            if not kalshi_market_matches(item, filters):
+                continue
+            ticker = extract_kalshi_market_ticker(item)
+            if ticker:
+                tickers.append(ticker)
+                matched += 1
+                matched_items.append(item)
+        LOG.info(
+            "Kalshi markets filtered matched=%d total=%d cursor=%s",
+            matched,
+            len(items),
+            cursor or "start",
+        )
+        metadata.update(build_kalshi_market_metadata(matched_items))
+        cursor = extract_kalshi_next_cursor(payload)
+        if not cursor:
+            break
+    return list(dict.fromkeys(tickers)), metadata
+
+
+def extract_kalshi_market_items(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict):
+        for key in ("markets", "data", "results", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def extract_kalshi_market_ticker(item: Dict[str, Any]) -> str:
+    for key in ("ticker", "market_ticker", "marketTicker", "symbol", "id"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def extract_kalshi_text_fields(item: Dict[str, Any]) -> List[str]:
+    fields: List[str] = []
+    for key in (
+        "title",
+        "subtitle",
+        "description",
+        "question",
+        "ticker",
+        "market_ticker",
+        "event_ticker",
+    ):
+        value = item.get(key)
+        if value:
+            fields.append(str(value))
+    return fields
+
+
+def extract_kalshi_categories(item: Dict[str, Any]) -> List[str]:
+    categories: List[str] = []
+    for key in ("category", "category_name", "categoryName", "series"):
+        value = item.get(key)
+        if value:
+            categories.append(str(value))
+    return categories
+
+
+def extract_kalshi_subcategories(item: Dict[str, Any]) -> List[str]:
+    subcategories: List[str] = []
+    for key in ("subcategory", "sub_category", "subcategory_name", "subcategoryName"):
+        value = item.get(key)
+        if value:
+            subcategories.append(str(value))
+    return subcategories
+
+
+def kalshi_market_volume(item: Dict[str, Any]) -> Optional[float]:
+    for key in (
+        "volume_24h",
+        "volume24h",
+        "volume",
+        "open_interest",
+        "openInterest",
+        "open_interest_usd",
+    ):
+        value = item.get(key)
+        try:
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def build_kalshi_market_metadata(items: Sequence[Dict[str, Any]]) -> Dict[str, MarketMeta]:
+    metadata: Dict[str, MarketMeta] = {}
+    for item in items:
+        label = (
+            item.get("title")
+            or item.get("question")
+            or item.get("subtitle")
+            or item.get("ticker")
+            or item.get("market_ticker")
+        )
+        text_fields = extract_kalshi_text_fields(item)
+        if label and label not in text_fields:
+            text_fields.append(str(label))
+        categories = extract_kalshi_categories(item)
+        subcategories = extract_kalshi_subcategories(item)
+        tags = extract_tag_names(item.get("tags") or item.get("tag") or item.get("tag_name"))
+        text_blob = build_text_blob(text_fields + categories + subcategories + tags)
+        volume = kalshi_market_volume(item)
+        meta = MarketMeta(label=str(label or ""), text_blob=text_blob, volume=volume)
+        keys = set()
+        ticker = extract_kalshi_market_ticker(item)
+        if ticker:
+            keys.add(ticker)
+        event_ticker = item.get("event_ticker") or item.get("eventTicker")
+        if event_ticker:
+            keys.add(str(event_ticker))
+        for key in keys:
+            metadata[key] = meta
+    return metadata
+
+
+def extract_kalshi_next_cursor(payload: Any) -> str:
+    if isinstance(payload, dict):
+        for key in ("next_cursor", "next", "cursor", "nextCursor", "next_token", "nextToken"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+    return ""
+
+
+def kalshi_market_matches(item: Dict[str, Any], filters: Dict[str, List[str]]) -> bool:
+    categories = extract_kalshi_categories(item)
+    subcategories = extract_kalshi_subcategories(item)
+    tags = extract_tag_names(item.get("tags") or item.get("tag") or item.get("tag_name"))
+    text_fields = extract_kalshi_text_fields(item)
+    text_blob = build_text_blob(text_fields + categories + subcategories + tags)
+
+    if filters["exclude_keywords"] and match_any_keyword(text_blob, filters["exclude_keywords"]):
+        return False
+    if filters["categories"] and not match_any_value(categories, filters["categories"]):
+        return False
+    if filters["subcategories"] and not match_any_value(subcategories, filters["subcategories"]):
+        return False
+    if filters["tags"] and not match_any_value(tags, filters["tags"]):
+        return False
+    if filters["keywords"] and not match_any_keyword(text_blob, filters["keywords"]):
+        return False
+    if filters["companies"] and not extract_company_match(text_blob, filters["companies"]):
+        return False
+    return True

@@ -23,6 +23,9 @@ class MockDetector:
     def handle_kalshi_trade(self, trade: Dict[str, Any]) -> None:
         pass
 
+    def update_market_metadata(self, platform: str, metadata: Dict[str, Any]) -> None:
+        return None
+
 async def main():
     settings = load_settings()
     # Override settings for quick test

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from typing import List
+from typing import Dict, List
 import os
-from ingest.ingest_utils import parse_csv_env, parse_bool_env
+from ingest.ingest_utils import parse_csv_env, parse_bool_env, parse_query_params
 
 @dataclass(frozen=True)
 class Settings:
@@ -23,6 +23,13 @@ class Settings:
     polymarket_events_url: str
     polymarket_events_limit: int
     polymarket_events_max_pages: int
+    polymarket_events_params: Dict[str, str]
+    polymarket_event_keywords: List[str]
+    polymarket_event_exclude_keywords: List[str]
+    polymarket_event_categories: List[str]
+    polymarket_event_subcategories: List[str]
+    polymarket_event_tags: List[str]
+    polymarket_event_companies: List[str]
     polymarket_l2_enabled: bool
     polymarket_l2_api_key: str
     polymarket_l2_api_secret: str
@@ -39,6 +46,16 @@ class Settings:
     kalshi_poll_enabled: bool
     kalshi_ws_channels: List[str]
     kalshi_market_tickers: List[str]
+    kalshi_markets_url: str
+    kalshi_markets_limit: int
+    kalshi_markets_max_pages: int
+    kalshi_markets_params: Dict[str, str]
+    kalshi_market_keywords: List[str]
+    kalshi_market_exclude_keywords: List[str]
+    kalshi_market_categories: List[str]
+    kalshi_market_subcategories: List[str]
+    kalshi_market_tags: List[str]
+    kalshi_market_companies: List[str]
     kalshi_access_key: str
     kalshi_private_key: str
     kalshi_signing_algo: str
@@ -92,6 +109,17 @@ def load_settings() -> Settings:
         ),
         polymarket_events_limit=int(os.getenv("POLYMARKET_EVENTS_LIMIT", "100")),
         polymarket_events_max_pages=int(os.getenv("POLYMARKET_EVENTS_MAX_PAGES", "50")),
+        polymarket_events_params=parse_query_params(os.getenv("POLYMARKET_EVENTS_PARAMS", "")),
+        polymarket_event_keywords=parse_csv_env(os.getenv("POLYMARKET_EVENT_KEYWORDS", "")),
+        polymarket_event_exclude_keywords=parse_csv_env(
+            os.getenv("POLYMARKET_EVENT_EXCLUDE_KEYWORDS", "")
+        ),
+        polymarket_event_categories=parse_csv_env(os.getenv("POLYMARKET_EVENT_CATEGORIES", "")),
+        polymarket_event_subcategories=parse_csv_env(
+            os.getenv("POLYMARKET_EVENT_SUBCATEGORIES", "")
+        ),
+        polymarket_event_tags=parse_csv_env(os.getenv("POLYMARKET_EVENT_TAGS", "")),
+        polymarket_event_companies=parse_csv_env(os.getenv("POLYMARKET_EVENT_COMPANIES", "")),
         polymarket_l2_enabled=parse_bool_env(os.getenv("POLYMARKET_L2_ENABLED", "false")),
         polymarket_l2_api_key=os.getenv("POLYMARKET_API_KEY", ""),
         polymarket_l2_api_secret=os.getenv("POLYMARKET_API_SECRET", ""),
@@ -112,6 +140,20 @@ def load_settings() -> Settings:
         kalshi_poll_enabled=parse_bool_env(os.getenv("KALSHI_POLL_ENABLED", "false")),
         kalshi_ws_channels=parse_csv_env(os.getenv("KALSHI_WS_CHANNELS", "trade")),
         kalshi_market_tickers=parse_csv_env(os.getenv("KALSHI_MARKET_TICKERS", "")),
+        kalshi_markets_url=os.getenv(
+            "KALSHI_MARKETS_URL", "https://api.elections.kalshi.com/trade-api/v2/markets"
+        ),
+        kalshi_markets_limit=int(os.getenv("KALSHI_MARKETS_LIMIT", "200")),
+        kalshi_markets_max_pages=int(os.getenv("KALSHI_MARKETS_MAX_PAGES", "50")),
+        kalshi_markets_params=parse_query_params(os.getenv("KALSHI_MARKETS_PARAMS", "")),
+        kalshi_market_keywords=parse_csv_env(os.getenv("KALSHI_MARKET_KEYWORDS", "")),
+        kalshi_market_exclude_keywords=parse_csv_env(
+            os.getenv("KALSHI_MARKET_EXCLUDE_KEYWORDS", "")
+        ),
+        kalshi_market_categories=parse_csv_env(os.getenv("KALSHI_MARKET_CATEGORIES", "")),
+        kalshi_market_subcategories=parse_csv_env(os.getenv("KALSHI_MARKET_SUBCATEGORIES", "")),
+        kalshi_market_tags=parse_csv_env(os.getenv("KALSHI_MARKET_TAGS", "")),
+        kalshi_market_companies=parse_csv_env(os.getenv("KALSHI_MARKET_COMPANIES", "")),
         kalshi_access_key=os.getenv("KALSHI_ACCESS_KEY", ""),
         kalshi_private_key=os.getenv("KALSHI_PRIVATE_KEY", ""),
         kalshi_signing_algo=os.getenv("KALSHI_SIGNING_ALGO", "ed25519"),

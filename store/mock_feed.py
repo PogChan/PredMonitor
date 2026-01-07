@@ -6,12 +6,12 @@ from store.trade_store import Trade
 
 def build_mock_trade(rng: random.Random) -> Trade:
     markets = [
-        "BTC > 50K - End of Month",
-        "ETH Spot > 3K",
-        "US Election - 2024",
-        "Fed Cut By September",
-        "Solana > 200",
-        "Tech Rally Q4",
+        {"label": "Venezuela Maduro arrest by June", "niche": True, "stock": False},
+        {"label": "AAPL earnings beat in Q4", "niche": False, "stock": True},
+        {"label": "TSLA deliveries above 500k", "niche": False, "stock": True},
+        {"label": "Fed cut by September", "niche": True, "stock": False},
+        {"label": "Tech rally Q4", "niche": False, "stock": True},
+        {"label": "BTC > 50K - End of Month", "niche": False, "stock": False},
     ]
     whales = [
         "0x9f8c4a1d2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e",
@@ -29,15 +29,20 @@ def build_mock_trade(rng: random.Random) -> Trade:
     actor = rng.choice(wallets if platform == "polymarket" else [None, None, None])
     price = round(rng.uniform(0.15, 0.85), 3)
     quantity = round(size_usd / price, 2)
+    market_choice = rng.choice(markets)
+    label = market_choice["label"]
     return Trade(
         timestamp=time.time(),
         platform=platform,
-        market=rng.choice(markets),
+        market=label,
+        market_label=label,
         size_usd=size_usd,
         side=side,
         actor_address=actor,
         price=price,
         quantity=quantity,
+        market_is_niche=market_choice["niche"],
+        market_is_stock=market_choice["stock"],
     )
 
 def run_mock_feed(store, interval_seconds=(0.6, 1.3)):

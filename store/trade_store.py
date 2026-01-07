@@ -17,6 +17,10 @@ class Trade:
     price: Optional[float]
     quantity: Optional[float]
     trade_id: Optional[str] = None
+    market_label: Optional[str] = None
+    market_is_niche: Optional[bool] = None
+    market_is_stock: Optional[bool] = None
+    market_volume: Optional[float] = None
 
 
 class InMemoryTradeStore:
@@ -108,18 +112,46 @@ class SqliteTradeStore:
                     timestamp REAL NOT NULL,
                     platform TEXT NOT NULL,
                     market TEXT,
+                    market_label TEXT,
                     size_usd REAL NOT NULL,
                     side TEXT,
                     actor_address TEXT,
                     price REAL,
                     quantity REAL,
                     trade_id TEXT,
+                    market_is_niche INTEGER,
+                    market_is_stock INTEGER,
+                    market_volume REAL,
                     UNIQUE(platform, trade_id) ON CONFLICT IGNORE
                 )
                 """
             )
+            existing = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(whale_flows)").fetchall()
+            }
+            self._add_column_if_missing(conn, existing, "market_label", "TEXT")
+            self._add_column_if_missing(conn, existing, "market_is_niche", "INTEGER")
+            self._add_column_if_missing(conn, existing, "market_is_stock", "INTEGER")
+            self._add_column_if_missing(conn, existing, "market_volume", "REAL")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_whale_flows_ts ON whale_flows(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_whale_flows_actor ON whale_flows(actor_address)")
+
+    def _add_column_if_missing(
+        self, conn: sqlite3.Connection, existing: set, name: str, ddl: str
+    ) -> None:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE whale_flows ADD COLUMN {name} {ddl}")
+
+    def _bool_to_int(self, value: Optional[bool]) -> Optional[int]:
+        if value is None:
+            return None
+        return 1 if value else 0
+
+    def _int_to_bool(self, value: Optional[int]) -> Optional[bool]:
+        if value is None:
+            return None
+        return bool(value)
 
     def add_trade(self, trade: Trade) -> None:
         with self._connect() as conn:
@@ -129,25 +161,33 @@ class SqliteTradeStore:
                     timestamp,
                     platform,
                     market,
+                    market_label,
                     size_usd,
                     side,
                     actor_address,
                     price,
                     quantity,
-                    trade_id
+                    trade_id,
+                    market_is_niche,
+                    market_is_stock,
+                    market_volume
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.timestamp,
                     trade.platform,
                     trade.market,
+                    trade.market_label,
                     trade.size_usd,
                     trade.side,
                     trade.actor_address,
                     trade.price,
                     trade.quantity,
                     trade.trade_id,
+                    self._bool_to_int(trade.market_is_niche),
+                    self._bool_to_int(trade.market_is_stock),
+                    trade.market_volume,
                 ),
             )
 
@@ -155,7 +195,8 @@ class SqliteTradeStore:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT timestamp, platform, market, size_usd, side, actor_address, price, quantity, trade_id
+                SELECT timestamp, platform, market, market_label, size_usd, side, actor_address,
+                       price, quantity, trade_id, market_is_niche, market_is_stock, market_volume
                 FROM whale_flows
                 WHERE size_usd >= ?
                 ORDER BY timestamp DESC
@@ -168,12 +209,16 @@ class SqliteTradeStore:
                 timestamp=row["timestamp"],
                 platform=row["platform"],
                 market=row["market"] or "",
+                market_label=row["market_label"],
                 size_usd=row["size_usd"],
                 side=row["side"] or "",
                 actor_address=row["actor_address"],
                 price=row["price"],
                 quantity=row["quantity"],
                 trade_id=row["trade_id"],
+                market_is_niche=self._int_to_bool(row["market_is_niche"]),
+                market_is_stock=self._int_to_bool(row["market_is_stock"]),
+                market_volume=row["market_volume"],
             )
             for row in rows
         ]

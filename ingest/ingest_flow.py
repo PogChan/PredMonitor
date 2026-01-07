@@ -20,8 +20,10 @@ from ingest.ingest_utils import (
     extract_size_usd,
     backfill_trade_numbers,
 )
+from ingest.market_metadata import MarketMeta
 from ingest.polymarket_ingest import polymarket_listener
 from ingest.kalshi_ingest import kalshi_poller, kalshi_ws_listener
+from market_classifier import MarketClassifier
 
 
 LOG = logging.getLogger("whale_hunter.ingest")
@@ -218,6 +220,7 @@ class SmurfDetector:
         sweep_cooldown_seconds: float,
         store: Optional[SqliteTradeStore],
         persist_trades: bool,
+        market_classifier: MarketClassifier,
     ) -> None:
         self.trade_window = TradeWindow(trade_window_seconds)
         self.wallet_tracker = WalletVolumeTracker(polymarket_window_seconds, polymarket_threshold_usd)
@@ -237,6 +240,42 @@ class SmurfDetector:
         )
         self.store = store
         self.persist_trades = persist_trades
+        self.market_classifier = market_classifier
+        self.market_metadata: Dict[Tuple[str, str], MarketMeta] = {}
+
+    def update_market_metadata(self, platform: str, metadata: Dict[str, MarketMeta]) -> None:
+        for key, meta in metadata.items():
+            if key:
+                self.market_metadata[(platform, str(key))] = meta
+
+    def _lookup_market_meta(self, platform: str, keys: List[Optional[str]]) -> Optional[MarketMeta]:
+        for key in keys:
+            if not key:
+                continue
+            meta = self.market_metadata.get((platform, str(key)))
+            if meta:
+                return meta
+        return None
+
+    def _extract_market_label(self, trade: Dict[str, Any], fallback: str) -> str:
+        for key in (
+            "title",
+            "question",
+            "name",
+            "subtitle",
+            "market_slug",
+            "marketSlug",
+            "event_slug",
+            "eventSlug",
+            "slug",
+            "market",
+            "ticker",
+            "market_ticker",
+        ):
+            value = trade.get(key)
+            if value:
+                return str(value)
+        return fallback
 
     def handle_polymarket_trade(self, trade: Dict[str, Any]) -> None:
         timestamp = parse_timestamp(
@@ -247,6 +286,24 @@ class SmurfDetector:
             or trade.get("ts")
         )
         market = normalize_market_id(trade)
+        meta = self._lookup_market_meta(
+            "polymarket",
+            [
+                market,
+                trade.get("market_slug"),
+                trade.get("marketSlug"),
+                trade.get("event_slug"),
+                trade.get("eventSlug"),
+                trade.get("slug"),
+            ],
+        )
+        label = self._extract_market_label(trade, market)
+        if meta and meta.label:
+            label = meta.label
+        text_blob = meta.text_blob if meta and meta.text_blob else label
+        classification = self.market_classifier.classify(
+            text_blob, meta.volume if meta else None
+        )
         taker = normalize_wallet(trade.get("taker_address") or trade.get("taker") or trade.get("takerAddress"))
         maker = normalize_wallet(trade.get("maker_address") or trade.get("maker") or trade.get("makerAddress"))
         side = normalize_side(trade.get("side") or trade.get("taker_side") or trade.get("takerSide"))
@@ -282,6 +339,10 @@ class SmurfDetector:
                     price=price,
                     quantity=quantity,
                     trade_id=trade_id,
+                    market_label=label,
+                    market_is_niche=classification.is_niche,
+                    market_is_stock=classification.is_stock,
+                    market_volume=meta.volume if meta else None,
                 )
             )
         for wallet in {taker, maker}:
@@ -305,6 +366,23 @@ class SmurfDetector:
             or trade.get("ts")
         )
         market = str(trade.get("market") or trade.get("ticker") or trade.get("market_ticker") or "")
+        meta = self._lookup_market_meta(
+            "kalshi",
+            [
+                market,
+                trade.get("ticker"),
+                trade.get("market_ticker"),
+                trade.get("event_ticker"),
+                trade.get("eventTicker"),
+            ],
+        )
+        label = self._extract_market_label(trade, market)
+        if meta and meta.label:
+            label = meta.label
+        text_blob = meta.text_blob if meta and meta.text_blob else label
+        classification = self.market_classifier.classify(
+            text_blob, meta.volume if meta else None
+        )
         side = normalize_side(trade.get("side") or trade.get("taker_side") or "")
         price = extract_price(trade)
         quantity = extract_quantity(trade)
@@ -337,6 +415,10 @@ class SmurfDetector:
                     price=price,
                     quantity=quantity,
                     trade_id=trade_id,
+                    market_label=label,
+                    market_is_niche=classification.is_niche,
+                    market_is_stock=classification.is_stock,
+                    market_volume=meta.volume if meta else None,
                 )
             )
         if side == "yes":
@@ -358,6 +440,7 @@ async def main() -> None:
         level=os.getenv("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    market_classifier = MarketClassifier.from_env()
     store = SqliteTradeStore(settings.trade_db_path) if settings.persist_trades else None
     detector = SmurfDetector(
         trade_window_seconds=settings.trade_window_seconds,
@@ -374,6 +457,7 @@ async def main() -> None:
         sweep_cooldown_seconds=settings.sweep_cooldown_seconds,
         store=store,
         persist_trades=settings.persist_trades,
+        market_classifier=market_classifier,
     )
     timeout = aiohttp.ClientTimeout(total=settings.http_timeout_seconds)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -383,7 +467,7 @@ async def main() -> None:
         if settings.enable_kalshi:
             if settings.kalshi_ws_enabled:
                 if settings.kalshi_access_key and settings.kalshi_private_key:
-                    tasks.append(asyncio.create_task(kalshi_ws_listener(settings, detector)))
+                    tasks.append(asyncio.create_task(kalshi_ws_listener(session, settings, detector)))
                 else:
                     LOG.warning(
                         "Kalshi WS disabled: missing KALSHI_ACCESS_KEY or KALSHI_PRIVATE_KEY."

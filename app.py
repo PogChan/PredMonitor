@@ -9,6 +9,7 @@ from dash import Dash, Input, Output, dcc, html
 
 from store.trade_store import InMemoryTradeStore, SqliteTradeStore, Trade
 from store.mock_feed import start_mock_feed_thread
+from ingest.ingest_utils import parse_csv_env
 from ui_utils import (
     format_usd,
     format_time,
@@ -24,6 +25,9 @@ FLOW_MIN_USD = float(os.getenv("DASH_FLOW_MIN_USD", "1000"))
 FLOW_LIMIT = int(os.getenv("DASH_FLOW_LIMIT", "60"))
 LEADERBOARD_LIMIT = int(os.getenv("DASH_LEADERBOARD_LIMIT", "14"))
 TRADE_DB_PATH = os.getenv("TRADE_DB_PATH", "data/trades.db")
+FOCUS_DEFAULT = [
+    value.lower() for value in parse_csv_env(os.getenv("DASH_MARKET_FOCUS", "niche,stock"))
+]
 
 if FEED_MODE == "db":
     STORE = SqliteTradeStore(TRADE_DB_PATH)
@@ -91,6 +95,22 @@ app.layout = html.Div(
                 ),
             ],
         ),
+        html.Div(
+            className="filter-bar",
+            children=[
+                html.Div("Focus", className="filter-label"),
+                dcc.Checklist(
+                    id="focus-filter",
+                    className="focus-toggle",
+                    options=[
+                        {"label": "Niche", "value": "niche"},
+                        {"label": "Stock", "value": "stock"},
+                    ],
+                    value=FOCUS_DEFAULT,
+                    inline=True,
+                ),
+            ],
+        ),
         dcc.Tabs(
             id="tabs",
             value="flow",
@@ -149,8 +169,16 @@ def flow_row(trade: Trade) -> html.Div:
     side_label = side.upper() if side != "na" else "N/A"
     side_class = f"flow-side flow-side--{side}"
     details = []
+    badges = []
     details.append(f"Qty {format_quantity(trade.quantity)}")
     details.append(f"Px {format_price(trade.price)}")
+    if trade.market_volume:
+        details.append(f"Vol {format_usd(trade.market_volume)}")
+    if trade.market_is_niche:
+        badges.append(html.Span("Niche", className="flow-badge flow-badge--niche"))
+    if trade.market_is_stock:
+        badges.append(html.Span("Stock", className="flow-badge flow-badge--stock"))
+    market_label = trade.market_label or trade.market or "Unknown Market"
     return html.Div(
         className="flow-row",
         children=[
@@ -158,7 +186,7 @@ def flow_row(trade: Trade) -> html.Div:
                 className="flow-meta",
                 children=[
                     html.Span(format_time(trade.timestamp), className="flow-time"),
-                    html.Span(trade.market or "Unknown Market", className="flow-market"),
+                    html.Span(market_label, className="flow-market"),
                 ],
             ),
             html.Div(
@@ -167,6 +195,7 @@ def flow_row(trade: Trade) -> html.Div:
                     html.Span(format_usd(trade.size_usd), className="flow-amount"),
                     html.Span(side_label, className=side_class),
                     html.Span(shorten_address(trade.actor_address or "anon"), className="flow-actor"),
+                    html.Div(badges, className="flow-badges") if badges else None,
                     html.Span(" | ".join(details), className="flow-details"),
                 ],
             ),
@@ -183,9 +212,20 @@ def flow_row(trade: Trade) -> html.Div:
     Output("stat-flow", "children"),
     Output("stat-last", "children"),
     Input("tick", "n_intervals"),
+    Input("focus-filter", "value"),
 )
-def refresh_dashboard(_ticks: int) -> Tuple[List[html.Div], List[html.Tr], str, str, str, str]:
+def refresh_dashboard(
+    _ticks: int, focus_filters: Optional[List[str]]
+) -> Tuple[List[html.Div], List[html.Tr], str, str, str, str]:
     recent = STORE.recent_trades(min_size_usd=FLOW_MIN_USD, limit=FLOW_LIMIT)
+    focus = {value.lower() for value in (focus_filters or []) if value}
+    if focus:
+        recent = [
+            trade
+            for trade in recent
+            if ("niche" in focus and trade.market_is_niche)
+            or ("stock" in focus and trade.market_is_stock)
+        ]
     flow_items = [flow_row(trade) for trade in recent]
     if not flow_items:
         flow_items = [html.Div("Waiting for trades...", className="empty-state")]

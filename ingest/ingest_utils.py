@@ -2,7 +2,7 @@ import json
 import re
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 from urllib.parse import parse_qsl
 
 def parse_csv_env(value: str) -> List[str]:
@@ -148,3 +148,71 @@ def parse_query_params(value: str) -> Dict[str, str]:
         except json.JSONDecodeError:
             return {}
     return {key: val for key, val in parse_qsl(cleaned, keep_blank_values=True)}
+
+
+def normalize_filter_terms(values: Sequence[str]) -> List[str]:
+    return [value.strip().lower() for value in values if value and value.strip()]
+
+
+def build_text_blob(values: Iterable[Any]) -> str:
+    parts: List[str] = []
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                if item is None:
+                    continue
+                parts.append(str(item))
+            continue
+        parts.append(str(value))
+    return " ".join(parts).lower()
+
+
+def match_any_keyword(text: str, keywords: Sequence[str]) -> bool:
+    if not keywords or not text:
+        return False
+    lowered = text.lower()
+    return any(keyword in lowered for keyword in keywords)
+
+
+def match_any_value(values: Iterable[str], keywords: Sequence[str]) -> bool:
+    if not keywords:
+        return False
+    for value in values:
+        if not value:
+            continue
+        lowered = str(value).lower()
+        for keyword in keywords:
+            if keyword in lowered:
+                return True
+    return False
+
+
+def extract_tag_names(tags: Any) -> List[str]:
+    if isinstance(tags, list):
+        names: List[str] = []
+        for tag in tags:
+            if isinstance(tag, dict):
+                name = tag.get("name") or tag.get("tag") or tag.get("label")
+                if name:
+                    names.append(str(name))
+            elif tag:
+                names.append(str(tag))
+        return names
+    if isinstance(tags, dict):
+        name = tags.get("name") or tags.get("tag") or tags.get("label")
+        return [str(name)] if name else []
+    if tags:
+        return [str(tags)]
+    return []
+
+
+def extract_company_match(text: str, company_terms: Sequence[str]) -> Optional[str]:
+    if not company_terms or not text:
+        return None
+    lowered = text.lower()
+    for term in company_terms:
+        if term in lowered:
+            return term
+    return None

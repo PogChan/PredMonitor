@@ -7,21 +7,31 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import aiohttp
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 
 from ingest.ingest_settings import Settings
+from ingest.market_metadata import MarketMeta
 from ingest.ingest_utils import (
     normalize_market_id,
     normalize_side,
     to_float,
     parse_query_params,
+    normalize_filter_terms,
+    build_text_blob,
+    match_any_keyword,
+    match_any_value,
+    extract_tag_names,
+    extract_company_match,
 )
 
 LOG = logging.getLogger("whale_hunter.polymarket")
+DEFAULT_HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; WhaleHunter/1.0)"
+}
 
 
 async def polymarket_listener(
@@ -38,7 +48,9 @@ async def polymarket_rtds_listener(
     session: aiohttp.ClientSession, settings: Settings, detector: Any
 ) -> None:
     while True:
-        event_slugs = await resolve_polymarket_event_slugs(session, settings)
+        event_slugs, metadata = await resolve_polymarket_event_slugs(session, settings)
+        if metadata:
+            detector.update_market_metadata("polymarket", metadata)
         if not event_slugs:
             LOG.warning("No Polymarket event slugs to subscribe to, retrying soon")
             await asyncio.sleep(30)
@@ -56,6 +68,7 @@ async def polymarket_rtds_worker(
     shard_id: int, event_slugs: Sequence[str], settings: Settings, detector: Any
 ) -> None:
     reconnect_delay = settings.polymarket_reconnect_min
+    saw_first_message = False
     while True:
         headers = build_polymarket_auth_headers(settings)
         try:
@@ -68,6 +81,13 @@ async def polymarket_rtds_worker(
                 await subscribe_polymarket_rtds(websocket, event_slugs, settings, shard_id)
                 reconnect_delay = settings.polymarket_reconnect_min
                 async for message in websocket:
+                    if not saw_first_message:
+                        LOG.info(
+                            "Polymarket RTDS shard=%s first message=%s",
+                            shard_id,
+                            str(message)[:300],
+                        )
+                        saw_first_message = True
                     for trade in extract_polymarket_trades(message):
                         detector.handle_polymarket_trade(trade)
         except ConnectionClosedOK as exc:
@@ -133,19 +153,22 @@ def build_rtds_subscription(slug: str, settings: Settings) -> Dict[str, Any]:
 
 async def resolve_polymarket_event_slugs(
     session: aiohttp.ClientSession, settings: Settings
-) -> List[str]:
+) -> Tuple[List[str], Dict[str, MarketMeta]]:
     if settings.polymarket_rtds_event_slugs:
-        return settings.polymarket_rtds_event_slugs
-    if settings.polymarket_rtds_wildcard:
-        return ["*"]
+        return settings.polymarket_rtds_event_slugs, {}
+    if settings.polymarket_rtds_wildcard and not polymarket_filters_active(settings):
+        return ["*"], {}
     return await fetch_polymarket_event_slugs(session, settings)
 
 
 async def fetch_polymarket_event_slugs(
     session: aiohttp.ClientSession, settings: Settings
-) -> List[str]:
+) -> Tuple[List[str], Dict[str, MarketMeta]]:
     slugs: List[str] = []
+    metadata: Dict[str, MarketMeta] = {}
     offset = 0
+    filters = build_polymarket_filters(settings)
+    filters_active = polymarket_filters_active(settings, filters)
     for _ in range(settings.polymarket_events_max_pages):
         params = {
             "limit": str(settings.polymarket_events_limit),
@@ -153,8 +176,13 @@ async def fetch_polymarket_event_slugs(
             "active": "true",
             "closed": "false",
         }
+        params.update(settings.polymarket_events_params)
         try:
-            async with session.get(settings.polymarket_events_url, params=params) as response:
+            async with session.get(
+                settings.polymarket_events_url,
+                params=params,
+                headers=DEFAULT_HTTP_HEADERS,
+            ) as response:
                 if response.status >= 400:
                     LOG.warning("Polymarket events request failed status=%s", response.status)
                     break
@@ -165,12 +193,28 @@ async def fetch_polymarket_event_slugs(
         items = extract_event_items(payload)
         if not items:
             break
+        matched = 0
+        matched_items: List[Dict[str, Any]] = []
         for item in items:
+            if filters_active and not polymarket_item_matches(item, filters):
+                continue
             slug = extract_event_slug(item)
             if slug:
                 slugs.append(slug)
+                matched += 1
+                matched_items.append(item)
+        metadata.update(
+            build_polymarket_market_metadata(matched_items if filters_active else items)
+        )
+        if filters_active:
+            LOG.info(
+                "Polymarket events filtered matched=%d total=%d offset=%d",
+                matched,
+                len(items),
+                offset,
+            )
         offset += settings.polymarket_events_limit
-    return list(dict.fromkeys(slugs))
+    return list(dict.fromkeys(slugs)), metadata
 
 
 def extract_event_items(payload: Any) -> List[Dict[str, Any]]:
@@ -196,16 +240,28 @@ async def polymarket_clob_listener(
     session: aiohttp.ClientSession, settings: Settings, detector: Any
 ) -> None:
     while True:
-        market_ids = await fetch_top_polymarket_market_ids(session, settings)
+        market_ids, metadata = await fetch_top_polymarket_market_ids(session, settings)
+        if metadata:
+            detector.update_market_metadata("polymarket", metadata)
         if not market_ids:
             LOG.warning("No Polymarket markets to subscribe to, retrying soon")
             await asyncio.sleep(30)
             continue
-        if settings.polymarket_subscribe_mode.strip().lower() in {"shard", "sharded"}:
+        subscribe_mode = settings.polymarket_subscribe_mode.strip().lower()
+        if subscribe_mode in {"shard", "sharded"}:
             shards = chunk_list(market_ids, settings.polymarket_rtds_chunk_size)
             tasks = [
                 asyncio.create_task(polymarket_clob_worker(idx, shard, settings, detector))
                 for idx, shard in enumerate(shards)
+            ]
+            await asyncio.gather(*tasks)
+            await asyncio.sleep(5)
+        elif subscribe_mode in {"single", "per_market", "market"}:
+            tasks = [
+                asyncio.create_task(
+                    polymarket_clob_worker(market_id, [market_id], settings, detector)
+                )
+                for market_id in market_ids
             ]
             await asyncio.gather(*tasks)
             await asyncio.sleep(5)
@@ -278,26 +334,35 @@ async def subscribe_polymarket_clob(
 
 async def fetch_top_polymarket_market_ids(
     session: aiohttp.ClientSession, settings: Settings
-) -> List[str]:
+) -> Tuple[List[str], Dict[str, MarketMeta]]:
     if settings.polymarket_market_ids:
-        return settings.polymarket_market_ids
+        return settings.polymarket_market_ids, {}
     params = {"limit": str(settings.polymarket_top_n)}
     params.update(parse_query_params(os.getenv("POLYMARKET_MARKETS_PARAMS", "")))
     params.setdefault("active", "true")
     params.setdefault("closed", "false")
     try:
-        async with session.get(settings.polymarket_markets_url, params=params) as response:
+        async with session.get(
+            settings.polymarket_markets_url,
+            params=params,
+            headers=DEFAULT_HTTP_HEADERS,
+        ) as response:
             if response.status >= 400:
                 LOG.warning("Polymarket markets request failed status=%s", response.status)
-                return []
+                return [], {}
             payload = await response.json(content_type=None)
     except Exception as exc:
         LOG.warning("Polymarket markets request failed error=%s", exc)
-        return []
+        return [], {}
 
     items = extract_market_items(payload)
+    filters = build_polymarket_filters(settings)
+    filters_active = polymarket_filters_active(settings, filters)
     active_items = [item for item in items if is_market_active(item)]
+    if filters_active:
+        active_items = [item for item in active_items if polymarket_item_matches(item, filters)]
     sorted_items = sorted(active_items, key=market_volume, reverse=True)
+    metadata = build_polymarket_market_metadata(active_items)
 
     market_ids: List[str] = []
     for item in sorted_items:
@@ -333,7 +398,7 @@ async def fetch_top_polymarket_market_ids(
             if mid:
                 final_ids.append(mid)
 
-    return final_ids
+    return final_ids, metadata
 
 
 def extract_market_items(payload: Any) -> List[Dict[str, Any]]:
@@ -345,6 +410,129 @@ def extract_market_items(payload: Any) -> List[Dict[str, Any]]:
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
     return []
+
+
+def build_polymarket_market_metadata(items: Sequence[Dict[str, Any]]) -> Dict[str, MarketMeta]:
+    metadata: Dict[str, MarketMeta] = {}
+    for item in items:
+        label = (
+            item.get("title")
+            or item.get("question")
+            or item.get("name")
+            or item.get("subtitle")
+            or item.get("slug")
+            or item.get("event_slug")
+            or item.get("market_slug")
+        )
+        text_fields = extract_polymarket_text_fields(item)
+        if label and label not in text_fields:
+            text_fields.append(str(label))
+        categories = extract_polymarket_categories(item)
+        subcategories = extract_polymarket_subcategories(item)
+        tags = extract_tag_names(item.get("tags") or item.get("tag") or item.get("tag_name"))
+        text_blob = build_text_blob(text_fields + categories + subcategories + tags)
+        volume = market_volume(item)
+        meta = MarketMeta(label=str(label or ""), text_blob=text_blob, volume=volume)
+        keys = set()
+        market_id = normalize_market_id(item)
+        if market_id:
+            keys.add(market_id)
+        for key in ("slug", "event_slug", "eventSlug", "market_slug", "marketSlug"):
+            value = item.get(key)
+            if value:
+                keys.add(str(value))
+        token_ids = item.get("clobTokenIds") or item.get("clob_token_ids")
+        if token_ids and isinstance(token_ids, str):
+            try:
+                token_ids = json.loads(token_ids)
+            except json.JSONDecodeError:
+                token_ids = []
+        if token_ids and isinstance(token_ids, list):
+            keys.update([str(token_id) for token_id in token_ids if token_id])
+        for key in keys:
+            metadata[key] = meta
+    return metadata
+
+
+def build_polymarket_filters(settings: Settings) -> Dict[str, List[str]]:
+    return {
+        "keywords": normalize_filter_terms(settings.polymarket_event_keywords),
+        "exclude_keywords": normalize_filter_terms(settings.polymarket_event_exclude_keywords),
+        "categories": normalize_filter_terms(settings.polymarket_event_categories),
+        "subcategories": normalize_filter_terms(settings.polymarket_event_subcategories),
+        "tags": normalize_filter_terms(settings.polymarket_event_tags),
+        "companies": normalize_filter_terms(settings.polymarket_event_companies),
+    }
+
+
+def polymarket_filters_active(
+    settings: Settings, filters: Optional[Dict[str, List[str]]] = None
+) -> bool:
+    if filters is None:
+        filters = build_polymarket_filters(settings)
+    if settings.polymarket_events_params:
+        return True
+    return any(filters.values())
+
+
+def polymarket_item_matches(item: Dict[str, Any], filters: Dict[str, List[str]]) -> bool:
+    categories = extract_polymarket_categories(item)
+    subcategories = extract_polymarket_subcategories(item)
+    tags = extract_tag_names(item.get("tags") or item.get("tag") or item.get("tag_name"))
+    text_fields = extract_polymarket_text_fields(item)
+    text_blob = build_text_blob(text_fields + categories + subcategories + tags)
+
+    if filters["exclude_keywords"] and match_any_keyword(text_blob, filters["exclude_keywords"]):
+        return False
+    if filters["categories"] and not match_any_value(categories, filters["categories"]):
+        return False
+    if filters["subcategories"] and not match_any_value(subcategories, filters["subcategories"]):
+        return False
+    if filters["tags"] and not match_any_value(tags, filters["tags"]):
+        return False
+    if filters["keywords"] and not match_any_keyword(text_blob, filters["keywords"]):
+        return False
+    if filters["companies"] and not extract_company_match(text_blob, filters["companies"]):
+        return False
+    return True
+
+
+def extract_polymarket_text_fields(item: Dict[str, Any]) -> List[str]:
+    fields: List[str] = []
+    for key in (
+        "title",
+        "name",
+        "question",
+        "description",
+        "subtitle",
+        "slug",
+        "event_slug",
+        "eventSlug",
+        "market_slug",
+        "marketSlug",
+    ):
+        value = item.get(key)
+        if value:
+            fields.append(str(value))
+    return fields
+
+
+def extract_polymarket_categories(item: Dict[str, Any]) -> List[str]:
+    categories: List[str] = []
+    for key in ("category", "category_name", "categoryName"):
+        value = item.get(key)
+        if value:
+            categories.append(str(value))
+    return categories
+
+
+def extract_polymarket_subcategories(item: Dict[str, Any]) -> List[str]:
+    subcategories: List[str] = []
+    for key in ("subcategory", "sub_category", "subcategory_name", "subcategoryName"):
+        value = item.get(key)
+        if value:
+            subcategories.append(str(value))
+    return subcategories
 
 
 def is_market_active(item: Dict[str, Any]) -> bool:
@@ -373,16 +561,23 @@ def extract_polymarket_trades(message: Any) -> List[Dict[str, Any]]:
             payload = json.loads(message)
         except json.JSONDecodeError:
             return []
-    elif isinstance(message, dict):
+    elif isinstance(message, (dict, list)):
         payload = message
     else:
         return []
+
+    if isinstance(payload, list):
+        results = []
+        for item in payload:
+            results.extend(extract_polymarket_trades(item))
+        return results
 
     event_type = normalize_side(
         payload.get("event")
         or payload.get("type")
         or payload.get("channel")
         or payload.get("topic")
+        or payload.get("event_type")
     )
     if event_type and event_type not in {"trade", "trades", "activity"}:
         return []

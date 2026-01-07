@@ -15,7 +15,7 @@ services:
     restart: unless-stopped
   ingest:
     build: .
-    command: python ingest_flow.py
+    command: python -m ingest.ingest_flow
     env_file: .env
     environment:
       ENABLE_POLYMARKET: "true"
