@@ -24,6 +24,7 @@ from ingest.market_metadata import MarketMeta
 from ingest.polymarket_ingest import polymarket_listener
 from ingest.kalshi_ingest import kalshi_poller, kalshi_ws_listener
 from market_classifier import MarketClassifier
+from ingest.semantic_registry import SemanticRegistry
 
 
 LOG = logging.getLogger("whale_hunter.ingest")
@@ -221,6 +222,7 @@ class SmurfDetector:
         store: Optional[SqliteTradeStore],
         persist_trades: bool,
         market_classifier: MarketClassifier,
+        semantic_registry: Optional[SemanticRegistry],
     ) -> None:
         self.trade_window = TradeWindow(trade_window_seconds)
         self.wallet_tracker = WalletVolumeTracker(polymarket_window_seconds, polymarket_threshold_usd)
@@ -242,11 +244,16 @@ class SmurfDetector:
         self.persist_trades = persist_trades
         self.market_classifier = market_classifier
         self.market_metadata: Dict[Tuple[str, str], MarketMeta] = {}
+        self.semantic_registry = semantic_registry
 
     def update_market_metadata(self, platform: str, metadata: Dict[str, MarketMeta]) -> None:
         for key, meta in metadata.items():
             if key:
                 self.market_metadata[(platform, str(key))] = meta
+                if self.semantic_registry:
+                    self.semantic_registry.ingest_market(
+                        platform, str(key), meta.label, meta.text_blob
+                    )
 
     def _lookup_market_meta(self, platform: str, keys: List[Optional[str]]) -> Optional[MarketMeta]:
         for key in keys:
@@ -301,6 +308,11 @@ class SmurfDetector:
         if meta and meta.label:
             label = meta.label
         text_blob = meta.text_blob if meta and meta.text_blob else label
+        cluster_id = None
+        if self.semantic_registry:
+            cluster_id = self.semantic_registry.cluster_for_market(
+                "polymarket", market, label, text_blob
+            )
         classification = self.market_classifier.classify(
             text_blob, meta.volume if meta else None
         )
@@ -343,6 +355,7 @@ class SmurfDetector:
                     market_is_niche=classification.is_niche,
                     market_is_stock=classification.is_stock,
                     market_volume=meta.volume if meta else None,
+                    cluster_id=cluster_id,
                 )
             )
         for wallet in {taker, maker}:
@@ -380,6 +393,11 @@ class SmurfDetector:
         if meta and meta.label:
             label = meta.label
         text_blob = meta.text_blob if meta and meta.text_blob else label
+        cluster_id = None
+        if self.semantic_registry:
+            cluster_id = self.semantic_registry.cluster_for_market(
+                "kalshi", market, label, text_blob
+            )
         classification = self.market_classifier.classify(
             text_blob, meta.volume if meta else None
         )
@@ -419,6 +437,7 @@ class SmurfDetector:
                     market_is_niche=classification.is_niche,
                     market_is_stock=classification.is_stock,
                     market_volume=meta.volume if meta else None,
+                    cluster_id=cluster_id,
                 )
             )
         if side == "yes":
@@ -458,6 +477,9 @@ async def main() -> None:
         store=store,
         persist_trades=settings.persist_trades,
         market_classifier=market_classifier,
+        semantic_registry=SemanticRegistry(settings.semantic_cluster_threshold)
+        if settings.semantic_cluster_enabled
+        else None,
     )
     timeout = aiohttp.ClientTimeout(total=settings.http_timeout_seconds)
     async with aiohttp.ClientSession(timeout=timeout) as session:

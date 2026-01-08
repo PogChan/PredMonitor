@@ -12,6 +12,9 @@ class Settings:
     polymarket_channel: str
     polymarket_subscribe_mode: str
     polymarket_stream_mode: str
+    polymarket_data_trades_url: str
+    polymarket_data_poll_seconds: float
+    polymarket_data_limit: int
     polymarket_rtds_url: str
     polymarket_rtds_topic: str
     polymarket_rtds_type: str
@@ -79,6 +82,8 @@ class Settings:
     sweep_window_ms: int
     sweep_min_trades: int
     sweep_cooldown_seconds: float
+    semantic_cluster_enabled: bool
+    semantic_cluster_threshold: float
 
 
 def load_settings() -> Settings:
@@ -94,6 +99,11 @@ def load_settings() -> Settings:
         polymarket_channel=os.getenv("POLYMARKET_WS_CHANNEL", "trades"),
         polymarket_subscribe_mode=os.getenv("POLYMARKET_SUBSCRIBE_MODE", "bulk"),
         polymarket_stream_mode=os.getenv("POLYMARKET_STREAM_MODE", "rtds"),
+        polymarket_data_trades_url=os.getenv(
+            "POLYMARKET_DATA_TRADES_URL", "https://data-api.polymarket.com/trades"
+        ),
+        polymarket_data_poll_seconds=float(os.getenv("POLYMARKET_DATA_POLL_SECONDS", "2")),
+        polymarket_data_limit=int(os.getenv("POLYMARKET_DATA_LIMIT", "200")),
         polymarket_rtds_url=os.getenv(
             "POLYMARKET_RTDS_URL", "wss://ws-live-data.polymarket.com"
         ),
@@ -177,4 +187,10 @@ def load_settings() -> Settings:
         sweep_window_ms=int(os.getenv("SWEEP_WINDOW_MS", "50")),
         sweep_min_trades=int(os.getenv("SWEEP_MIN_TRADES", "5")),
         sweep_cooldown_seconds=float(os.getenv("SWEEP_COOLDOWN_SECONDS", "1.0")),
+        semantic_cluster_enabled=parse_bool_env(
+            os.getenv("SEMANTIC_CLUSTER_ENABLED", "true")
+        ),
+        semantic_cluster_threshold=float(
+            os.getenv("SEMANTIC_CLUSTER_THRESHOLD", "85")
+        ),
     )

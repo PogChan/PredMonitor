@@ -21,6 +21,7 @@ class Trade:
     market_is_niche: Optional[bool] = None
     market_is_stock: Optional[bool] = None
     market_volume: Optional[float] = None
+    cluster_id: Optional[str] = None
 
 
 class InMemoryTradeStore:
@@ -122,6 +123,7 @@ class SqliteTradeStore:
                     market_is_niche INTEGER,
                     market_is_stock INTEGER,
                     market_volume REAL,
+                    cluster_id TEXT,
                     UNIQUE(platform, trade_id) ON CONFLICT IGNORE
                 )
                 """
@@ -134,6 +136,7 @@ class SqliteTradeStore:
             self._add_column_if_missing(conn, existing, "market_is_niche", "INTEGER")
             self._add_column_if_missing(conn, existing, "market_is_stock", "INTEGER")
             self._add_column_if_missing(conn, existing, "market_volume", "REAL")
+            self._add_column_if_missing(conn, existing, "cluster_id", "TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_whale_flows_ts ON whale_flows(timestamp)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_whale_flows_actor ON whale_flows(actor_address)")
 
@@ -170,9 +173,10 @@ class SqliteTradeStore:
                     trade_id,
                     market_is_niche,
                     market_is_stock,
-                    market_volume
+                    market_volume,
+                    cluster_id
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.timestamp,
@@ -188,6 +192,7 @@ class SqliteTradeStore:
                     self._bool_to_int(trade.market_is_niche),
                     self._bool_to_int(trade.market_is_stock),
                     trade.market_volume,
+                    trade.cluster_id,
                 ),
             )
 
@@ -196,7 +201,8 @@ class SqliteTradeStore:
             rows = conn.execute(
                 """
                 SELECT timestamp, platform, market, market_label, size_usd, side, actor_address,
-                       price, quantity, trade_id, market_is_niche, market_is_stock, market_volume
+                       price, quantity, trade_id, market_is_niche, market_is_stock, market_volume,
+                       cluster_id
                 FROM whale_flows
                 WHERE size_usd >= ?
                 ORDER BY timestamp DESC
@@ -219,6 +225,7 @@ class SqliteTradeStore:
                 market_is_niche=self._int_to_bool(row["market_is_niche"]),
                 market_is_stock=self._int_to_bool(row["market_is_stock"]),
                 market_volume=row["market_volume"],
+                cluster_id=row["cluster_id"],
             )
             for row in rows
         ]

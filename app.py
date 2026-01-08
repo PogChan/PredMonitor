@@ -16,6 +16,7 @@ from ui_utils import (
     format_price,
     format_quantity,
     shorten_address,
+    shorten_cluster_id,
 )
 
 
@@ -178,6 +179,11 @@ def flow_row(trade: Trade) -> html.Div:
         badges.append(html.Span("Niche", className="flow-badge flow-badge--niche"))
     if trade.market_is_stock:
         badges.append(html.Span("Stock", className="flow-badge flow-badge--stock"))
+    cluster_label = shorten_cluster_id(trade.cluster_id)
+    if cluster_label:
+        badges.append(
+            html.Span(f"Cluster {cluster_label}", className="flow-badge flow-badge--cluster")
+        )
     market_label = trade.market_label or trade.market or "Unknown Market"
     return html.Div(
         className="flow-row",

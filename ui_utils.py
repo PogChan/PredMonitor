@@ -32,3 +32,11 @@ def shorten_address(address: str) -> str:
     if len(address) <= 12:
         return address
     return f"{address[:6]}...{address[-4:]}"
+
+def shorten_cluster_id(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    value = str(value)
+    if len(value) <= 10:
+        return value
+    return f"{value[:4]}...{value[-4:]}"

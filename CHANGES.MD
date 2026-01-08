@@ -1,13 +1,7 @@
 # Changes
 
 ## Latest
-- Summary: verified RTDS wildcard "*" returns no slugs/trades, confirmed POLYMARKET_RTDS_WILDCARD=false yields real slugs, and added RTDS first-message logging + wildcard disable in .env (requires ingest recreate).
+- Summary: set Polymarket data mode as default, lowered Dash flow threshold, and added cluster_id badges in the UI.
 - Recent prompts:
-  - "Why does the streamlit app work fine and fetches the flows but some how the dash app doesnt fetch anything and its just blank can you help me debug i think its something wit hthe whole dash frameowkr of the flash server and all that"
-  - "db does not start filling"
-  - "its stuck like this"
-  - "POLYMARKET_STREAM_MODE None"
-  - "db still 0 and streamlit works"
-  - "RTDS only, no CLOB"
-  - "db still 0 after RTDS"
-  - "still 0 after recreate"
+  - "both please cause i do want sizing"
+  - "Want me to make the data mode the default and restart the service, or add cluster_id visibility in the Dash UI?"

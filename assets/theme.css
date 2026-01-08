@@ -282,6 +282,11 @@ body::before {
   border-color: rgba(168, 209, 255, 0.45);
 }
 
+.flow-badge--cluster {
+  color: #f4d58d;
+  border-color: rgba(244, 213, 141, 0.5);
+}
+
 .flow-amount {
   font-size: 18px;
   font-weight: 600;

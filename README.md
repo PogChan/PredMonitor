@@ -52,3 +52,36 @@ MARKET_NICHE_MAX_VOLUME_USD=500000
 Notes:
 - If a market is marked as `niche` or `stock`, it will appear when that focus is selected in the UI.
 - Set `MARKET_*_KEYWORDS=off` to disable the default list for that bucket.
+
+## Polymarket Trade Sources
+
+The ingest supports multiple Polymarket stream modes:
+
+```
+POLYMARKET_STREAM_MODE=clob   # order book updates (no size)
+POLYMARKET_STREAM_MODE=rtds   # RTDS trades stream
+POLYMARKET_STREAM_MODE=data   # REST poller via data-api
+```
+
+For the REST poller:
+
+```
+POLYMARKET_DATA_TRADES_URL=https://data-api.polymarket.com/trades
+POLYMARKET_DATA_POLL_SECONDS=2
+POLYMARKET_DATA_LIMIT=200
+```
+
+## Semantic Clustering
+
+Trades can be grouped into cross-venue clusters using fuzzy string matching so that similar
+Polymarket/Kalshi questions share a `cluster_id`.
+
+Environment variables:
+
+```
+SEMANTIC_CLUSTER_ENABLED=true
+SEMANTIC_CLUSTER_THRESHOLD=85
+```
+
+Notes:
+- Clusters are assigned during ingestion and stored in the `whale_flows.cluster_id` column.

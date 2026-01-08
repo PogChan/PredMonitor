@@ -7,7 +7,8 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 import aiohttp
 from websockets.asyncio.client import connect
@@ -16,6 +17,7 @@ from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
 from ingest.ingest_settings import Settings
 from ingest.market_metadata import MarketMeta
 from ingest.ingest_utils import (
+    parse_timestamp,
     normalize_market_id,
     normalize_side,
     to_float,
@@ -38,10 +40,71 @@ async def polymarket_listener(
     session: aiohttp.ClientSession, settings: Settings, detector: Any
 ) -> None:
     mode = settings.polymarket_stream_mode.strip().lower()
+    if mode in {"data", "poll", "rest"}:
+        await polymarket_data_poller(session, settings, detector)
+        return
     if mode == "rtds":
         await polymarket_rtds_listener(session, settings, detector)
         return
     await polymarket_clob_listener(session, settings, detector)
+
+
+async def polymarket_data_poller(
+    session: aiohttp.ClientSession, settings: Settings, detector: Any
+) -> None:
+    latest_timestamp = 0.0
+    seen_trade_ids: Deque[str] = deque()
+    seen_trade_id_set: set[str] = set()
+    seen_trade_ids_limit = 5000
+    while True:
+        params = {"limit": str(settings.polymarket_data_limit)}
+        try:
+            async with session.get(
+                settings.polymarket_data_trades_url,
+                params=params,
+                headers=DEFAULT_HTTP_HEADERS,
+            ) as response:
+                if response.status >= 400:
+                    LOG.warning("Polymarket trades request failed status=%s", response.status)
+                    await asyncio.sleep(settings.polymarket_data_poll_seconds)
+                    continue
+                payload = await response.json(content_type=None)
+        except Exception as exc:
+            LOG.warning("Polymarket trades request failed error=%s", exc)
+            await asyncio.sleep(settings.polymarket_data_poll_seconds)
+            continue
+
+        trades = extract_polymarket_trades(payload)
+        for trade in trades:
+            timestamp = parse_timestamp(
+                trade.get("timestamp")
+                or trade.get("time")
+                or trade.get("created_at")
+                or trade.get("createdAt")
+                or trade.get("ts")
+            )
+            trade_id = (
+                trade.get("transactionHash")
+                or trade.get("tx_hash")
+                or trade.get("txHash")
+                or trade.get("hash")
+                or trade.get("id")
+            )
+            if trade_id:
+                trade_id = str(trade_id)
+                if trade_id in seen_trade_id_set:
+                    continue
+            if timestamp < latest_timestamp:
+                continue
+            detector.handle_polymarket_trade(trade)
+            latest_timestamp = max(latest_timestamp, timestamp)
+            if trade_id:
+                seen_trade_id_set.add(trade_id)
+                seen_trade_ids.append(trade_id)
+                while len(seen_trade_ids) > seen_trade_ids_limit:
+                    dropped = seen_trade_ids.popleft()
+                    seen_trade_id_set.discard(dropped)
+        await asyncio.sleep(settings.polymarket_data_poll_seconds)
 
 
 async def polymarket_rtds_listener(
