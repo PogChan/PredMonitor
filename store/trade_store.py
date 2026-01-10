@@ -36,9 +36,27 @@ class InMemoryTradeStore:
             if len(self._trades) > self._maxlen:
                 self._trades = self._trades[-self._maxlen :]
 
-    def recent_trades(self, min_size_usd: float, limit: int) -> List[Trade]:
+    def recent_trades(
+        self,
+        min_size_usd: float,
+        limit: int,
+        since_ts: Optional[float] = None,
+        platforms: Optional[List[str]] = None,
+        wallet: Optional[str] = None,
+    ) -> List[Trade]:
         with self._lock:
             trades = [trade for trade in self._trades if trade.size_usd >= min_size_usd]
+        if since_ts is not None:
+            trades = [trade for trade in trades if trade.timestamp >= since_ts]
+        if platforms:
+            allowed = {platform.lower() for platform in platforms}
+            trades = [
+                trade
+                for trade in trades
+                if (trade.platform or "").lower() in allowed
+            ]
+        if wallet:
+            trades = [trade for trade in trades if trade.actor_address == wallet]
         return list(reversed(trades))[:limit]
 
     def stats(self) -> Dict[str, str]:
@@ -58,14 +76,14 @@ class InMemoryTradeStore:
             "last": last_trade.timestamp if last_trade else None,
         }
 
-    def leaderboard(self, limit: int) -> List[Dict[str, str]]:
+    def leaderboard(self, limit: int, since_ts: Optional[float] = None) -> List[Dict[str, str]]:
         now = time.time()
-        cutoff_24h = now - 86400
+        cutoff = since_ts if since_ts is not None else now - 86400
         totals: Dict[str, Dict[str, float]] = {}
         with self._lock:
             trades = list(self._trades)
         for trade in trades:
-            if not trade.actor_address or trade.timestamp < cutoff_24h:
+            if not trade.actor_address or trade.timestamp < cutoff:
                 continue
             stats = totals.setdefault(trade.actor_address, {"volume": 0.0, "yes": 0.0, "no": 0.0})
             stats["volume"] += trade.size_usd
@@ -89,6 +107,33 @@ class InMemoryTradeStore:
                 }
             )
         return results
+
+    def wallet_summary(self, wallet: str, since_ts: Optional[float] = None) -> Optional[Dict[str, float]]:
+        if not wallet:
+            return None
+        now = time.time()
+        cutoff = since_ts if since_ts is not None else now - 86400
+        with self._lock:
+            trades = [trade for trade in self._trades if trade.actor_address == wallet]
+        if cutoff is not None:
+            trades = [trade for trade in trades if trade.timestamp >= cutoff]
+        if not trades:
+            return None
+        yes_volume = sum(
+            trade.size_usd for trade in trades if (trade.side or "").lower() in {"yes", "buy"}
+        )
+        no_volume = sum(
+            trade.size_usd for trade in trades if (trade.side or "").lower() in {"no", "sell"}
+        )
+        total_volume = sum(trade.size_usd for trade in trades)
+        last_ts = max(trade.timestamp for trade in trades)
+        return {
+            "trades": float(len(trades)),
+            "volume": total_volume,
+            "yes_volume": yes_volume,
+            "no_volume": no_volume,
+            "last_ts": last_ts,
+        }
 
 
 class SqliteTradeStore:
@@ -196,20 +241,38 @@ class SqliteTradeStore:
                 ),
             )
 
-    def recent_trades(self, min_size_usd: float, limit: int) -> List[Trade]:
+    def recent_trades(
+        self,
+        min_size_usd: float,
+        limit: int,
+        since_ts: Optional[float] = None,
+        platforms: Optional[List[str]] = None,
+        wallet: Optional[str] = None,
+    ) -> List[Trade]:
+        where = ["size_usd >= ?"]
+        params: List[object] = [min_size_usd]
+        if since_ts is not None:
+            where.append("timestamp >= ?")
+            params.append(since_ts)
+        if platforms:
+            placeholders = ", ".join(["?"] * len(platforms))
+            where.append(f"lower(platform) IN ({placeholders})")
+            params.extend([platform.lower() for platform in platforms])
+        if wallet:
+            where.append("actor_address = ?")
+            params.append(wallet)
+        query = f"""
+            SELECT timestamp, platform, market, market_label, size_usd, side, actor_address,
+                   price, quantity, trade_id, market_is_niche, market_is_stock, market_volume,
+                   cluster_id
+            FROM whale_flows
+            WHERE {" AND ".join(where)}
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        params.append(limit)
         with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT timestamp, platform, market, market_label, size_usd, side, actor_address,
-                       price, quantity, trade_id, market_is_niche, market_is_stock, market_volume,
-                       cluster_id
-                FROM whale_flows
-                WHERE size_usd >= ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-                """,
-                (min_size_usd, limit),
-            ).fetchall()
+            rows = conn.execute(query, params).fetchall()
         return [
             Trade(
                 timestamp=row["timestamp"],
@@ -261,9 +324,9 @@ class SqliteTradeStore:
             "last": last,
         }
 
-    def leaderboard(self, limit: int) -> List[Dict[str, str]]:
+    def leaderboard(self, limit: int, since_ts: Optional[float] = None) -> List[Dict[str, str]]:
         now = time.time()
-        cutoff_24h = now - 86400
+        cutoff = since_ts if since_ts is not None else now - 86400
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -277,7 +340,7 @@ class SqliteTradeStore:
                 ORDER BY volume DESC
                 LIMIT ?
                 """,
-                (cutoff_24h, limit),
+                (cutoff, limit),
             ).fetchall()
         results = []
         for row in rows:
@@ -295,3 +358,31 @@ class SqliteTradeStore:
                 }
             )
         return results
+
+    def wallet_summary(self, wallet: str, since_ts: Optional[float] = None) -> Optional[Dict[str, float]]:
+        if not wallet:
+            return None
+        now = time.time()
+        cutoff = since_ts if since_ts is not None else now - 86400
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS trades,
+                       SUM(size_usd) AS volume,
+                       SUM(CASE WHEN lower(side) IN ('yes', 'buy') THEN size_usd ELSE 0 END) AS yes_volume,
+                       SUM(CASE WHEN lower(side) IN ('no', 'sell') THEN size_usd ELSE 0 END) AS no_volume,
+                       MAX(timestamp) AS last_ts
+                FROM whale_flows
+                WHERE actor_address = ? AND timestamp >= ?
+                """,
+                (wallet, cutoff),
+            ).fetchone()
+        if not row or not row["trades"]:
+            return None
+        return {
+            "trades": float(row["trades"]),
+            "volume": row["volume"] or 0.0,
+            "yes_volume": row["yes_volume"] or 0.0,
+            "no_volume": row["no_volume"] or 0.0,
+            "last_ts": row["last_ts"],
+        }

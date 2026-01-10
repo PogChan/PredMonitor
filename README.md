@@ -53,6 +53,32 @@ Notes:
 - If a market is marked as `niche` or `stock`, it will appear when that focus is selected in the UI.
 - Set `MARKET_*_KEYWORDS=off` to disable the default list for that bucket.
 
+## Dash Flow Filters
+
+Environment variables:
+
+```
+# Default filters for the Live Flow tab
+DASH_FLOW_MIN_USD=1000
+DASH_FLOW_LIMIT=60
+DASH_FLOW_LOOKBACK_HOURS=6
+DASH_FLOW_MAX_LIMIT=200
+DASH_MARKET_QUERY=
+
+# "Interesting" flag thresholds
+DASH_INTERESTING_TRADE_USD=5000
+DASH_INTERESTING_MARKET_SHARE=0.05
+
+# Live reload controls
+DASH_DEBUG=true
+DASH_HOT_RELOAD=true
+DASH_HOT_RELOAD_INTERVAL=1000
+```
+
+Notes:
+- Set `DASH_FLOW_LOOKBACK_HOURS=0` to show all trades.
+- Interesting trades are flagged by size or share of market volume.
+
 ## Polymarket Trade Sources
 
 The ingest supports multiple Polymarket stream modes:

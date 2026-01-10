@@ -9,6 +9,9 @@ services:
       DASH_HOST: 0.0.0.0
       DASH_PORT: 8050
       DASH_FEED_MODE: db
+      DASH_DEBUG: "true"
+      DASH_HOT_RELOAD: "true"
+      DASH_HOT_RELOAD_INTERVAL: "1000"
       TRADE_DB_PATH: data/trades.db
     volumes:
       - .:/app

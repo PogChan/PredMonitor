@@ -1,7 +1,7 @@
 # Changes
 
 ## Latest
-- Summary: set Polymarket data mode as default, lowered Dash flow threshold, and added cluster_id badges in the UI.
+- Summary: enabled Dash live reload controls, added market search filter, and extended wallet filtering to respect market query/focus/interesting filters; updated dashboard env defaults.
 - Recent prompts:
-  - "both please cause i do want sizing"
-  - "Want me to make the data mode the default and restart the service, or add cluster_id visibility in the Dash UI?"
+  - "lets make sure live reload is on since we are using docker lets make sure its properly mounted"
+  - "KeyError: Callback function not found for output ... fix these errors + want filters for companies/stock"
