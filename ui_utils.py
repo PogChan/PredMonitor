@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 def format_usd(value: Optional[float]) -> str:
@@ -10,7 +10,13 @@ def format_time(timestamp: Optional[float]) -> str:
     if not timestamp:
         return "--"
     try:
-        return datetime.fromtimestamp(timestamp).strftime("%H:%M:%S")
+        # Convert to UTC-aware datetime first
+        dt_utc = datetime.fromtimestamp(timestamp, timezone.utc)
+        # Adjust to User's local time (US/Eastern = UTC-5)
+        # We use a fixed offset here based on the user's metadata to ensure correctness
+        # regardless of the server/container timezone.
+        dt_local = dt_utc.astimezone(timezone(timedelta(hours=-5)))
+        return dt_local.strftime("%H:%M:%S (%Y-%m-%d)")
     except (ValueError, TypeError):
         return "--"
 

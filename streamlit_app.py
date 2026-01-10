@@ -71,6 +71,79 @@ def render():
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Active Wallets (24h)", stats.get("wallets", "--"))
         c2.metric("Trades (24h)", stats.get("trades", "--"))
+import time
+import os
+import pandas as pd
+import streamlit as st
+from store.trade_store import InMemoryTradeStore, SqliteTradeStore
+from store.mock_feed import start_mock_feed_thread
+from ui_utils import format_usd, format_time, shorten_address, format_price, format_quantity
+
+st.set_page_config(layout="wide", page_title="Whale Hunter")
+
+# Styling to match the dark/premium aesthetic
+st.markdown("""
+<style>
+    .stApp {
+        background-color: #0e1117;
+    }
+    div[data-testid="stMetricValue"] {
+        font-size: 24px;
+        color: #e6e6e6;
+    }
+    div[data-testid="stMetricLabel"] {
+        color: #a0a0a0;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+@st.cache_resource
+def get_store():
+    feed_mode = os.getenv("DASH_FEED_MODE", "mock").lower()
+    path = os.getenv("TRADE_DB_PATH", "data/trades.db")
+
+    if feed_mode == "db":
+        store = SqliteTradeStore(path)
+    else:
+        store = InMemoryTradeStore()
+        # Start mock feed in background
+        start_mock_feed_thread(store)
+    return store
+
+store = get_store()
+
+# Header
+c1, c2 = st.columns([3, 1])
+c1.title("🐋 Whale Hunter")
+c1.caption("Smart money flow across Polymarket and Kalshi")
+with c2:
+    live = st.toggle("Live Stream", value=True)
+
+# Metrics Grid
+m1, m2, m3, m4 = st.columns(4)
+metrics = st.empty()
+
+# Tabs
+tab_flow, tab_lead = st.tabs(["🌊 Live Flow", "🏆 Leaderboard"])
+
+with tab_flow:
+    flow_table = st.empty()
+
+with tab_lead:
+    leader_table = st.empty()
+
+def render():
+    # 1. Update Metrics
+    stats = store.stats()
+
+    # We rebuild metrics manually to avoid full rerun flicker if possible,
+    # but Streamlit reruns the whole script in loop anyway.
+    # Using st.empty() containers inside columns is tricky,
+    # better to clear and rewrite a container holding all metrics.
+    with metrics.container():
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Active Wallets (24h)", stats.get("wallets", "--"))
+        c2.metric("Trades (24h)", stats.get("trades", "--"))
         c3.metric("Flow Rate", stats.get("flow", "--"))
 
         last_ts = stats.get("last")
@@ -78,7 +151,7 @@ def render():
         c4.metric("Last Trade", last_str)
 
     # 2. Update Flow Table
-    recent = store.recent_trades(min_size_usd=1000, limit=60)
+    recent = store.recent_trades(min_size_usd=100, limit=100)
     if recent:
         data = []
         for t in recent:

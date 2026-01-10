@@ -31,6 +31,8 @@ class InMemoryTradeStore:
         self._lock = threading.Lock()
 
     def add_trade(self, trade: Trade) -> None:
+        if trade.size_usd < 100:
+            return
         with self._lock:
             self._trades.append(trade)
             if len(self._trades) > self._maxlen:
@@ -202,6 +204,8 @@ class SqliteTradeStore:
         return bool(value)
 
     def add_trade(self, trade: Trade) -> None:
+        if trade.size_usd < 100:
+            return
         with self._connect() as conn:
             conn.execute(
                 """

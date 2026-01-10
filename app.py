@@ -22,8 +22,8 @@ from ui_utils import (
 
 
 FEED_MODE = os.getenv("DASH_FEED_MODE", "mock").lower()
-FLOW_MIN_USD = float(os.getenv("DASH_FLOW_MIN_USD", "1000"))
-FLOW_LIMIT = int(os.getenv("DASH_FLOW_LIMIT", "60"))
+FLOW_MIN_USD = float(os.getenv("DASH_FLOW_MIN_USD", "100"))
+FLOW_LIMIT = int(os.getenv("DASH_FLOW_LIMIT", "100"))
 LEADERBOARD_LIMIT = int(os.getenv("DASH_LEADERBOARD_LIMIT", "14"))
 FLOW_LOOKBACK_HOURS = float(os.getenv("DASH_FLOW_LOOKBACK_HOURS", "6"))
 FLOW_MAX_LIMIT = int(os.getenv("DASH_FLOW_MAX_LIMIT", "200"))
@@ -443,147 +443,186 @@ def refresh_dashboard(
     List[html.Div],
     List[html.Div],
 ]:
-    min_size = sanitize_min_size(min_size_value)
-    limit = sanitize_limit(limit_value)
-    since_ts = resolve_since_ts(lookback_hours)
-    market_query = normalize_market_query(market_query_value)
-    platforms = [value.lower() for value in (platform_filters or []) if value]
-    recent = STORE.recent_trades(
-        min_size_usd=min_size,
-        limit=limit,
-        since_ts=since_ts,
-        platforms=platforms,
-    )
-    if market_query:
-        recent = [
-            trade
-            for trade in recent
-            if market_query
-            in (trade.market_label or trade.market or "").lower()
-        ]
-    focus = {value.lower() for value in (focus_filters or []) if value}
-    if focus:
-        recent = [
-            trade
-            for trade in recent
-            if ("niche" in focus and trade.market_is_niche)
-            or ("stock" in focus and trade.market_is_stock)
-        ]
-    if interesting_filters and "interesting" in interesting_filters:
-        recent = [trade for trade in recent if trade_is_interesting(trade)]
-    flow_items = [flow_row(trade) for trade in recent]
-    if not flow_items:
-        flow_items = [html.Div("No trades for the current filters.", className="empty-state")]
-    leaderboard = STORE.leaderboard(limit=LEADERBOARD_LIMIT, since_ts=since_ts)
-    leaderboard_rows = [
-        html.Tr(
-            children=[
-                html.Td(shorten_address(entry["address"])),
-                html.Td(format_usd(entry.get("volume"))),
-                html.Td(entry["position"]),
-            ]
-        )
-        for entry in leaderboard
-    ]
-    if not leaderboard_rows:
-        leaderboard_rows = [
-            html.Tr(
-                children=[
-                    html.Td(
-                        html.Div("No wallets yet", className="empty-state"),
-                        colSpan=3,
-                    )
-                ]
-            )
-        ]
-    stats = STORE.stats()
-    last_ts = stats.get("last") if isinstance(stats, dict) else None
-    last_value = format_time(last_ts) if isinstance(last_ts, (int, float)) else "--"
-    wallet_options = [
-        {"label": shorten_address(entry["address"]), "value": entry["address"]}
-        for entry in leaderboard
-        if entry.get("address")
-    ]
-    wallet_summary = []
-    wallet_trades = []
-    if selected_wallet:
-        summary = STORE.wallet_summary(selected_wallet, since_ts=since_ts)
-        if summary:
-            yes_volume = summary.get("yes_volume", 0.0)
-            no_volume = summary.get("no_volume", 0.0)
-            position = "YES" if yes_volume >= no_volume else "NO"
-            wallet_summary = [
-                html.Div(
-                    className="wallet-summary-card",
-                    children=[
-                        html.Div("Trades", className="wallet-summary-label"),
-                        html.Div(f"{int(summary.get('trades', 0)):,}", className="wallet-summary-value"),
-                    ],
-                ),
-                html.Div(
-                    className="wallet-summary-card",
-                    children=[
-                        html.Div("Volume", className="wallet-summary-label"),
-                        html.Div(format_usd(summary.get("volume")), className="wallet-summary-value"),
-                    ],
-                ),
-                html.Div(
-                    className="wallet-summary-card",
-                    children=[
-                        html.Div("Bias", className="wallet-summary-label"),
-                        html.Div(position, className="wallet-summary-value"),
-                    ],
-                ),
-                html.Div(
-                    className="wallet-summary-card",
-                    children=[
-                        html.Div("Last Seen", className="wallet-summary-label"),
-                        html.Div(format_time(summary.get("last_ts")), className="wallet-summary-value"),
-                    ],
-                ),
-            ]
-        else:
-            wallet_summary = [html.Div("No trades for that wallet.", className="empty-state")]
-        wallet_recent = STORE.recent_trades(
+    try:
+        min_size = sanitize_min_size(min_size_value)
+        limit = sanitize_limit(limit_value)
+        since_ts = resolve_since_ts(lookback_hours)
+        market_query = normalize_market_query(market_query_value)
+        platforms = [value.lower() for value in (platform_filters or []) if value]
+        recent = STORE.recent_trades(
             min_size_usd=min_size,
             limit=limit,
             since_ts=since_ts,
             platforms=platforms,
-            wallet=selected_wallet,
         )
         if market_query:
-            wallet_recent = [
+            recent = [
                 trade
-                for trade in wallet_recent
+                for trade in recent
                 if market_query
                 in (trade.market_label or trade.market or "").lower()
             ]
+        focus = {value.lower() for value in (focus_filters or []) if value}
         if focus:
-            wallet_recent = [
+            recent = [
                 trade
-                for trade in wallet_recent
+                for trade in recent
                 if ("niche" in focus and trade.market_is_niche)
                 or ("stock" in focus and trade.market_is_stock)
             ]
         if interesting_filters and "interesting" in interesting_filters:
-            wallet_recent = [trade for trade in wallet_recent if trade_is_interesting(trade)]
-        wallet_trades = [flow_row(trade) for trade in wallet_recent]
-        if not wallet_trades:
-            wallet_trades = [html.Div("No wallet trades yet.", className="empty-state")]
-    else:
-        wallet_summary = [html.Div("Select a wallet to inspect.", className="empty-state")]
-        wallet_trades = [html.Div("Pick a wallet to view trades.", className="empty-state")]
-    return (
-        flow_items,
-        leaderboard_rows,
-        stats["wallets"],
-        stats["trades"],
-        stats["flow"],
-        last_value,
-        wallet_options,
-        wallet_summary,
-        wallet_trades,
-    )
+            recent = [trade for trade in recent if trade_is_interesting(trade)]
+        flow_items = [flow_row(trade) for trade in recent]
+        if not flow_items:
+            flow_items = [html.Div("No trades for the current filters.", className="empty-state")]
+        leaderboard = STORE.leaderboard(limit=LEADERBOARD_LIMIT, since_ts=since_ts)
+        leaderboard_rows = [
+            html.Tr(
+                children=[
+                    html.Td(shorten_address(entry["address"])),
+                    html.Td(format_usd(entry.get("volume"))),
+                    html.Td(entry["position"]),
+                ]
+            )
+            for entry in leaderboard
+        ]
+        if not leaderboard_rows:
+            leaderboard_rows = [
+                html.Tr(
+                    children=[
+                        html.Td(
+                            html.Div("No wallets yet", className="empty-state"),
+                            colSpan=3,
+                        )
+                    ]
+                )
+            ]
+        stats = STORE.stats()
+        last_ts = stats.get("last") if isinstance(stats, dict) else None
+        last_value = format_time(last_ts) if isinstance(last_ts, (int, float)) else "--"
+        wallet_options = [
+            {"label": shorten_address(entry["address"]), "value": entry["address"]}
+            for entry in leaderboard
+            if entry.get("address")
+        ]
+        wallet_summary = []
+        wallet_trades = []
+        if selected_wallet:
+            summary = STORE.wallet_summary(selected_wallet, since_ts=since_ts)
+            if summary:
+                yes_volume = summary.get("yes_volume", 0.0)
+                no_volume = summary.get("no_volume", 0.0)
+                position = "YES" if yes_volume >= no_volume else "NO"
+                wallet_summary = [
+                    html.Div(
+                        className="wallet-summary-card",
+                        children=[
+                            html.Div("Trades", className="wallet-summary-label"),
+                            html.Div(f"{int(summary.get('trades', 0)):,}", className="wallet-summary-value"),
+                        ],
+                    ),
+                    html.Div(
+                        className="wallet-summary-card",
+                        children=[
+                            html.Div("Volume", className="wallet-summary-label"),
+                            html.Div(format_usd(summary.get("volume")), className="wallet-summary-value"),
+                        ],
+                    ),
+                    html.Div(
+                        className="wallet-summary-card",
+                        children=[
+                            html.Div("Bias", className="wallet-summary-label"),
+                            html.Div(position, className="wallet-summary-value"),
+                        ],
+                    ),
+                    html.Div(
+                        className="wallet-summary-card",
+                        children=[
+                            html.Div("Last Seen", className="wallet-summary-label"),
+                            html.Div(format_time(summary.get("last_ts")), className="wallet-summary-value"),
+                        ],
+                    ),
+                ]
+            else:
+                wallet_summary = [html.Div("No trades for that wallet.", className="empty-state")]
+            wallet_recent = STORE.recent_trades(
+                min_size_usd=min_size,
+                limit=limit,
+                since_ts=since_ts,
+                platforms=platforms,
+                wallet=selected_wallet,
+            )
+            if market_query:
+                wallet_recent = [
+                    trade
+                    for trade in wallet_recent
+                    if market_query
+                    in (trade.market_label or trade.market or "").lower()
+                ]
+            if focus:
+                wallet_recent = [
+                    trade
+                    for trade in wallet_recent
+                    if ("niche" in focus and trade.market_is_niche)
+                    or ("stock" in focus and trade.market_is_stock)
+                ]
+            if interesting_filters and "interesting" in interesting_filters:
+                wallet_recent = [trade for trade in wallet_recent if trade_is_interesting(trade)]
+            wallet_trades = [flow_row(trade) for trade in wallet_recent]
+            if not wallet_trades:
+                wallet_trades = [html.Div("No wallet trades yet.", className="empty-state")]
+        else:
+            wallet_summary = [html.Div("Select a wallet to inspect.", className="empty-state")]
+            wallet_trades = [html.Div("Pick a wallet to view trades.", className="empty-state")]
+        return (
+            flow_items,
+            leaderboard_rows,
+            stats["wallets"],
+            stats["trades"],
+            stats["flow"],
+            last_value,
+            wallet_options,
+            wallet_summary,
+            wallet_trades,
+        )
+    except Exception as e:
+        import traceback
+        err_msg = traceback.format_exc()
+        print(f"Error in refresh_dashboard: {err_msg}")
+        try:
+            with open("data/dash_error.log", "w") as f:
+                f.write(err_msg)
+        except:
+            pass
+
+        error_display = [
+            html.Div(
+                children=[
+                    html.H3("Dashboard Error", style={"color": "#ff4444"}),
+                    html.Pre(
+                        str(e),
+                        style={
+                            "whiteSpace": "pre-wrap",
+                            "wordBreak": "break-word",
+                            "color": "#ff4444",
+                            "backgroundColor": "#2a0000",
+                            "padding": "10px",
+                            "borderRadius": "4px",
+                        }
+                    )
+                ],
+                style={"padding": "20px"}
+            )
+        ]
+
+        return (
+            error_display,
+            [],
+            "--", "--", "--", "--",
+            [],
+            [],
+            []
+        )
 
 
 if FEED_MODE == "mock":

@@ -320,10 +320,12 @@ class SmurfDetector:
         maker = normalize_wallet(trade.get("maker_address") or trade.get("maker") or trade.get("makerAddress"))
         side = normalize_side(trade.get("side") or trade.get("taker_side") or trade.get("takerSide"))
         price = extract_price(trade)
+        if price is not None and price > 0.90:
+            return
         quantity = extract_quantity(trade)
         trade_id = extract_trade_id(trade)
         size_usd = extract_size_usd(trade)
-        if size_usd <= 0:
+        if size_usd < 100:
             return
         price, quantity = backfill_trade_numbers(size_usd, price, quantity)
         actor = taker or maker
@@ -403,10 +405,12 @@ class SmurfDetector:
         )
         side = normalize_side(trade.get("side") or trade.get("taker_side") or "")
         price = extract_price(trade)
+        if price is not None and price > 0.90:
+            return
         quantity = extract_quantity(trade)
         trade_id = extract_trade_id(trade)
         size_usd = extract_size_usd(trade)
-        if size_usd <= 0:
+        if size_usd < 100:
             return
         price, quantity = backfill_trade_numbers(size_usd, price, quantity)
         self.zscore_detector.add_trade("kalshi", market, timestamp, size_usd)
@@ -487,14 +491,18 @@ async def main() -> None:
         if settings.enable_polymarket:
             tasks.append(asyncio.create_task(polymarket_listener(session, settings, detector)))
         if settings.enable_kalshi:
+            kalshi_active = False
             if settings.kalshi_ws_enabled:
                 if settings.kalshi_access_key and settings.kalshi_private_key:
                     tasks.append(asyncio.create_task(kalshi_ws_listener(session, settings, detector)))
+                    kalshi_active = True
                 else:
                     LOG.warning(
                         "Kalshi WS disabled: missing KALSHI_ACCESS_KEY or KALSHI_PRIVATE_KEY."
                     )
-            if settings.kalshi_poll_enabled:
+
+            if settings.kalshi_poll_enabled or not kalshi_active:
+                LOG.info("Starting Kalshi Poller used as fallback or requested.")
                 tasks.append(asyncio.create_task(kalshi_poller(session, settings, detector)))
         if not tasks:
             LOG.warning("No ingestion tasks enabled. Set ENABLE_POLYMARKET or ENABLE_KALSHI.")
