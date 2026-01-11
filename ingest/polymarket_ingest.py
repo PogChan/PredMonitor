@@ -495,7 +495,13 @@ def build_polymarket_market_metadata(items: Sequence[Dict[str, Any]]) -> Dict[st
         tags = extract_tag_names(item.get("tags") or item.get("tag") or item.get("tag_name"))
         text_blob = build_text_blob(text_fields + categories + subcategories + tags)
         volume = market_volume(item)
-        meta = MarketMeta(label=str(label or ""), text_blob=text_blob, volume=volume)
+        category = categories[0] if categories else None
+        meta = MarketMeta(
+            label=str(label or ""),
+            text_blob=text_blob,
+            volume=volume,
+            category=category,
+        )
         keys = set()
         market_id = normalize_market_id(item)
         if market_id:

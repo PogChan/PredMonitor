@@ -1,4 +1,19 @@
 services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: whale
+      POSTGRES_PASSWORD: hunter
+      POSTGRES_DB: trades
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U whale -d trades"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   dashboard:
     build: .
     command: python app.py
@@ -8,14 +23,22 @@ services:
     environment:
       DASH_HOST: 0.0.0.0
       DASH_PORT: 8050
-      DASH_FEED_MODE: db
+      DASH_FEED_MODE: postgres
       DASH_DEBUG: "true"
       DASH_HOT_RELOAD: "true"
       DASH_HOT_RELOAD_INTERVAL: "1000"
-      TRADE_DB_PATH: data/trades.db
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: whale
+      POSTGRES_PASSWORD: hunter
+      POSTGRES_DB: trades
     volumes:
       - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
   ingest:
     build: .
     command: python -m ingest.ingest_flow
@@ -23,9 +46,19 @@ services:
     environment:
       ENABLE_POLYMARKET: "true"
       ENABLE_KALSHI: "true"
-      TRADE_DB_PATH: data/trades.db
       PERSIST_TRADES: "true"
       KALSHI_WS_ENABLED: "true"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: whale
+      POSTGRES_PASSWORD: hunter
+      POSTGRES_DB: trades
     volumes:
       - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres_data:

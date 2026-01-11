@@ -7,3 +7,4 @@ class MarketMeta:
     label: str
     text_blob: str
     volume: Optional[float]
+    category: Optional[str] = None

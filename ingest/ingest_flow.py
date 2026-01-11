@@ -7,7 +7,7 @@ from typing import Any, Deque, Dict, List, Optional, Set, Tuple
 
 import aiohttp
 
-from store.trade_store import SqliteTradeStore, Trade
+from store.trade_store import SqliteTradeStore, PostgresTradeStore, Trade
 from ingest.ingest_settings import Settings, load_settings
 from ingest.ingest_utils import (
     parse_timestamp,
@@ -358,6 +358,7 @@ class SmurfDetector:
                     market_is_stock=classification.is_stock,
                     market_volume=meta.volume if meta else None,
                     cluster_id=cluster_id,
+                    market_category=meta.category if meta else None,
                 )
             )
         for wallet in {taker, maker}:
@@ -442,6 +443,7 @@ class SmurfDetector:
                     market_is_stock=classification.is_stock,
                     market_volume=meta.volume if meta else None,
                     cluster_id=cluster_id,
+                    market_category=meta.category if meta else None,
                 )
             )
         if side == "yes":
@@ -464,7 +466,21 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     market_classifier = MarketClassifier.from_env()
-    store = SqliteTradeStore(settings.trade_db_path) if settings.persist_trades else None
+    # Use PostgresTradeStore if postgres is configured, else fall back to SQLite
+    store = None
+    if settings.persist_trades:
+        if settings.postgres_host and settings.postgres_host != "localhost" or os.getenv("POSTGRES_HOST"):
+            store = PostgresTradeStore(
+                host=settings.postgres_host,
+                port=settings.postgres_port,
+                user=settings.postgres_user,
+                password=settings.postgres_password,
+                database=settings.postgres_db,
+            )
+            LOG.info("Using PostgreSQL store at %s:%s", settings.postgres_host, settings.postgres_port)
+        else:
+            store = SqliteTradeStore(settings.trade_db_path)
+            LOG.info("Using SQLite store at %s", settings.trade_db_path)
     detector = SmurfDetector(
         trade_window_seconds=settings.trade_window_seconds,
         polymarket_window_seconds=settings.polymarket_whale_window_seconds,
@@ -491,19 +507,18 @@ async def main() -> None:
         if settings.enable_polymarket:
             tasks.append(asyncio.create_task(polymarket_listener(session, settings, detector)))
         if settings.enable_kalshi:
-            kalshi_active = False
             if settings.kalshi_ws_enabled:
                 if settings.kalshi_access_key and settings.kalshi_private_key:
                     tasks.append(asyncio.create_task(kalshi_ws_listener(session, settings, detector)))
-                    kalshi_active = True
                 else:
                     LOG.warning(
                         "Kalshi WS disabled: missing KALSHI_ACCESS_KEY or KALSHI_PRIVATE_KEY."
                     )
 
-            if settings.kalshi_poll_enabled or not kalshi_active:
-                LOG.info("Starting Kalshi Poller used as fallback or requested.")
-                tasks.append(asyncio.create_task(kalshi_poller(session, settings, detector)))
+            # Always run the poller as a reliable fallback/main source
+            # This ensures we get data even if WS authentication fails or drops
+            LOG.info("Starting Kalshi Poller (Public API) to ensure data coverage.")
+            tasks.append(asyncio.create_task(kalshi_poller(session, settings, detector)))
         if not tasks:
             LOG.warning("No ingestion tasks enabled. Set ENABLE_POLYMARKET or ENABLE_KALSHI.")
             return

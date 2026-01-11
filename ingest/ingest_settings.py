@@ -84,6 +84,11 @@ class Settings:
     sweep_cooldown_seconds: float
     semantic_cluster_enabled: bool
     semantic_cluster_threshold: float
+    postgres_host: str
+    postgres_port: int
+    postgres_user: str
+    postgres_password: str
+    postgres_db: str
 
 
 def load_settings() -> Settings:
@@ -193,4 +198,9 @@ def load_settings() -> Settings:
         semantic_cluster_threshold=float(
             os.getenv("SEMANTIC_CLUSTER_THRESHOLD", "85")
         ),
+        postgres_host=os.getenv("POSTGRES_HOST", "localhost"),
+        postgres_port=int(os.getenv("POSTGRES_PORT", "5432")),
+        postgres_user=os.getenv("POSTGRES_USER", "whale"),
+        postgres_password=os.getenv("POSTGRES_PASSWORD", "hunter"),
+        postgres_db=os.getenv("POSTGRES_DB", "trades"),
     )

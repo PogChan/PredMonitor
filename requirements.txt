@@ -9,4 +9,5 @@ websockets>=12.0
 streamlit
 pandas
 matplotlib
+psycopg2-binary>=2.9.0
 

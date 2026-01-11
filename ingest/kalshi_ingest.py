@@ -446,7 +446,13 @@ def build_kalshi_market_metadata(items: Sequence[Dict[str, Any]]) -> Dict[str, M
         tags = extract_tag_names(item.get("tags") or item.get("tag") or item.get("tag_name"))
         text_blob = build_text_blob(text_fields + categories + subcategories + tags)
         volume = kalshi_market_volume(item)
-        meta = MarketMeta(label=str(label or ""), text_blob=text_blob, volume=volume)
+        category = categories[0] if categories else None
+        meta = MarketMeta(
+            label=str(label or ""),
+            text_blob=text_blob,
+            volume=volume,
+            category=category,
+        )
         keys = set()
         ticker = extract_kalshi_market_ticker(item)
         if ticker:
